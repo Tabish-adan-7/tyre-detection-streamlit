@@ -429,7 +429,7 @@ if mode == "Upload":
             """, unsafe_allow_html=True)
 
             uploaded_file = st.file_uploader(
-                "",
+                "Upload Tyre image",
                 type=["jpg", "jpeg", "png"],
                 label_visibility="collapsed",
                 key="uploader"
