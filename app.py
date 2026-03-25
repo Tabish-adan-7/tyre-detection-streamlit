@@ -431,13 +431,15 @@ def has_prominent_logo(image):
     # If high edge density or contrast, likely has text/logo
     return edge_ratio > 0.08 or contrast_ratio > 30
 
+
 def predict_image(model, image):
-    """Production-ready defect detection"""
-    # check for logo presence
+    """Professional defect detection with severity levels and internal logo tracking"""
+
+    # Check for logo presence
     has_logo = has_prominent_logo(image)
-    #Remove text/logos first
+
     image_cleaned = remove_text_regions(image)
-    processed_img, error, metrics = preprocess_image(image)
+    processed_img, error, metrics = preprocess_image(image_cleaned)
     if error:
         return None, None, None, error, None
 
@@ -445,20 +447,31 @@ def predict_image(model, image):
         prediction = model.predict(processed_img, verbose=0)
         confidence = float(prediction[0][0])
 
-        # If logo detected and confidence is artificially high, force review
-        if has_logo and confidence > 0.50:
-            return "Review Needed", confidence, "suspicious", "⚠️ Logo detected - Manual inspection required", metrics
         # Model: >0.5 = Good, <0.5 = Defective
-        if confidence > 0.70:  # Clear Good
-            return "Good", confidence, "good", "✅ No defects detected", metrics
-        elif confidence < 0.30:  # Clear Defective
-            return "Defective", confidence, "defective", "❌ Defect detected - Reject", metrics
-        else:  # Uncertain zone (0.30 - 0.70)
-            return "Review Needed", confidence, "suspicious", "⚠️ Manual inspection required", metrics
+
+        # Determine result with severity levels
+        if confidence > 0.70:
+            label = "PASS"
+            category = "good"
+            message = "✅ Accept - No defects detected"
+        elif confidence < 0.30:
+            label = "REJECT"
+            category = "defective"
+            message = "❌ Reject - Major defect detected"
+        else:
+            label = "Minor Defect"
+            category = "suspicious"
+            message = "🔍 Manual inspection required - Minor defect or uncertainty"
+
+        # Add logo info to metrics (for internal tracking, not displayed)
+        if metrics:
+            metrics['has_logo'] = has_logo
+            metrics['logo_detected'] = has_logo
+
+        return label, confidence, category, message, metrics
 
     except Exception as e:
         return None, None, None, f"Prediction error: {str(e)}", None
-
 
 # Main Content Area
 if mode == "Upload":
