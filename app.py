@@ -310,6 +310,31 @@ def preprocess_image(image):
         return None, "Image processing failed", None
 
 
+def remove_text_regions(image):
+    """Remove text/logos to match training data distribution"""
+    # Convert to grayscale
+    gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+
+    # Detect text regions (high gradient areas)
+    grad_x = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
+    grad_y = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
+    gradient_magnitude = np.sqrt(grad_x ** 2 + grad_y ** 2)
+
+    # Threshold to find text-like regions
+    _, text_mask = cv2.threshold(gradient_magnitude, 30, 255, cv2.THRESH_BINARY)
+
+    # Dilate to cover the text areas better
+    kernel = np.ones((5, 5), np.uint8)
+    text_mask = cv2.dilate(text_mask, kernel, iterations=2)
+
+    # Blur only the text regions
+    blurred = cv2.GaussianBlur(image, (15, 15), 0)
+    result = image.copy()
+    result[text_mask > 0] = blurred[text_mask > 0]
+
+    return result
+
+
 def draw_defect_boxes(image, confidence):
     """Draw professional bounding boxes around defects"""
     try:
@@ -391,8 +416,27 @@ def draw_defect_boxes(image, confidence):
         return image, 0, 0, 0, 0
 
 
+def has_prominent_logo(image):
+    """Check if image has prominent text/logo"""
+    gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+
+    # Count high-frequency edges (text areas)
+    edges = cv2.Canny(gray, 50, 150)
+    edge_ratio = np.sum(edges > 0) / edges.size
+
+    # Also check for high contrast regions
+    laplacian = cv2.Laplacian(gray, cv2.CV_64F)
+    contrast_ratio = np.mean(np.abs(laplacian))
+
+    # If high edge density or contrast, likely has text/logo
+    return edge_ratio > 0.08 or contrast_ratio > 30
+
 def predict_image(model, image):
-    """Make prediction"""
+    """Production-ready defect detection"""
+    # check for logo presence
+    has_logo = has_prominent_logo(image)
+    #Remove text/logos first
+    image_cleaned = remove_text_regions(image)
     processed_img, error, metrics = preprocess_image(image)
     if error:
         return None, None, None, error, None
@@ -401,12 +445,17 @@ def predict_image(model, image):
         prediction = model.predict(processed_img, verbose=0)
         confidence = float(prediction[0][0])
 
-        if confidence > 0.30:
-            return "Good", confidence, "good", "✅ Tyre passed inspection - Safe for use", metrics
-        elif confidence > 0.14:
-            return "Review Needed", confidence, "suspicious", "Manual inspection recommended", metrics
-        else:
-            return "Defective", confidence, "defective", "❌ Tyre failed - Do not use", metrics
+        # If logo detected and confidence is artificially high, force review
+        if has_logo and confidence > 0.50:
+            return "Review Needed", confidence, "suspicious", "⚠️ Logo detected - Manual inspection required", metrics
+        # Model: >0.5 = Good, <0.5 = Defective
+        if confidence > 0.70:  # Clear Good
+            return "Good", confidence, "good", "✅ No defects detected", metrics
+        elif confidence < 0.30:  # Clear Defective
+            return "Defective", confidence, "defective", "❌ Defect detected - Reject", metrics
+        else:  # Uncertain zone (0.30 - 0.70)
+            return "Review Needed", confidence, "suspicious", "⚠️ Manual inspection required", metrics
+
     except Exception as e:
         return None, None, None, f"Prediction error: {str(e)}", None
 
