@@ -333,8 +333,44 @@ def remove_text_regions(image):
     result[text_mask > 0] = blurred[text_mask > 0]
 
     return result
+#function to check if the image is blurry
+def is_image_blurry(image, threshold=0.05):
+    """Detect blur using edge density"""
+    try:
+        # Convert to grayscale
+        gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+
+        # Detect edges using Canny
+        edges = cv2.Canny(gray, 50, 150)
+
+        # Calculate edge density (percentage of image that is edges)
+        edge_density = np.sum(edges > 0) / edges.size
+
+        print(f"Edge density: {edge_density:.4f}")
+
+        # Blurry = LOW edge density (few edges)
+        is_blurry = edge_density < threshold
+
+        return is_blurry, edge_density
+
+    except Exception as e:
+        print(f"Blur detection error: {e}")
+        return False, 0
 
 
+def check_image_resolution(image):
+    """Check image resolution and return quality info"""
+    try:
+        h, w = image.shape[:2]
+        is_hd = (w >= 1080) or (h >= 1080)
+
+        print(f"Image resolution: {w} x {h} pixels - {'HD' if is_hd else 'Low resolution'}")
+
+        return is_hd, w, h
+
+    except Exception as e:
+        print(f"Resolution check error: {e}")
+        return True, 0, 0  # Default to HD if error
 def draw_defect_boxes(image, confidence):
     """Draw professional bounding boxes around defects"""
     try:
@@ -433,11 +469,21 @@ def has_prominent_logo(image):
 
 
 def predict_image(model, image):
-    """Professional defect detection with severity levels and internal logo tracking"""
+    """Defect detection - Reject low-res ONLY for good tyres"""
 
-    # Check for logo presence
+    # Step 1: Check image resolution
+    is_hd, width, height = check_image_resolution(image)
+
+    # Step 2: Check blur using edge density
+    is_blurry, edge_density = is_image_blurry(image, threshold=0.02)
+
+    if is_blurry:
+        return "BLURRY", 0, "blurry", "📷 BLURRY IMAGE - Please upload a clear image", None
+
+    # Step 3: Check for logo presence
     has_logo = has_prominent_logo(image)
 
+    # Step 4: Clean and predict
     image_cleaned = remove_text_regions(image)
     processed_img, error, metrics = preprocess_image(image_cleaned)
     if error:
@@ -447,26 +493,34 @@ def predict_image(model, image):
         prediction = model.predict(processed_img, verbose=0)
         confidence = float(prediction[0][0])
 
-        # Model: >0.5 = Good, <0.5 = Defective
+        # Store original confidence
+        original_confidence = confidence
 
-        # Determine result with severity levels
-        if confidence > 0.70:
+        # SPECIAL HANDLING: If low resolution AND model says GOOD (confidence > 0.60)
+        if not is_hd and confidence > 0.60:
+            return "LOW QUALITY", confidence, "low_quality", f"📷 IMAGE QUALITY TOO LOW ({width}x{height}) - Please upload a higher quality image (minimum 1080p)", None
+
+        # Normal processing for:
+        # - HD images (any result)
+        # - Low-res defective tyres (confidence <= 0.60)
+
+        # Threshold at 0.60
+        if confidence > 0.60:
             label = "PASS"
             category = "good"
-            message = "✅ Accept - No defects detected"
-        elif confidence < 0.30:
+            message = "✅ Tyre passed inspection - Safe for use"
+        else:
             label = "REJECT"
             category = "defective"
-            message = "❌ Reject - Major defect detected"
-        else:
-            label = "Minor Defect"
-            category = "suspicious"
-            message = "🔍 Manual inspection required - Minor defect or uncertainty"
+            message = "❌ Tyre rejected - Defect detected"
 
-        # Add logo info to metrics (for internal tracking, not displayed)
+        # Add metrics for tracking
         if metrics:
             metrics['has_logo'] = has_logo
             metrics['logo_detected'] = has_logo
+            metrics['resolution'] = f"{width}x{height}"
+            metrics['is_hd'] = is_hd
+            metrics['original_confidence'] = original_confidence
 
         return label, confidence, category, message, metrics
 
