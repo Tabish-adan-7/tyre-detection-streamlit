@@ -362,9 +362,9 @@ def check_image_resolution(image):
     """Check image resolution and return quality info"""
     try:
         h, w = image.shape[:2]
-        is_hd = (w >= 1080) or (h >= 1080)
+        is_hd = (w >= 640) or (h >= 640)
 
-        print(f"Image resolution: {w} x {h} pixels - {'HD' if is_hd else 'Low resolution'}")
+        print(f"Image resolution: {w} x {h} pixels - {'Acceptible' if is_hd else 'Low resolution'}")
 
         return is_hd, w, h
 
@@ -498,7 +498,7 @@ def predict_image(model, image):
 
         # SPECIAL HANDLING: If low resolution AND model says GOOD (confidence > 0.60)
         if not is_hd and confidence > 0.60:
-            return "LOW QUALITY", confidence, "low_quality", f"📷 IMAGE QUALITY TOO LOW ({width}x{height}) - Please upload a higher quality image (minimum 1080p)", None
+            return "LOW QUALITY", confidence, "low_quality", f" IMAGE QUALITY TOO LOW ({width}x{height}) - Please upload a higher quality image (minimum 640p)", None
 
         # Normal processing for:
         # - HD images (any result)
