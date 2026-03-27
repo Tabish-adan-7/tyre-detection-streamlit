@@ -658,49 +658,71 @@ if mode == "Upload":
             # Result Card (separate from images)
             col1, col2, col3 = st.columns([1, 2, 1])
             with col2:
-                card_class = f"result-card {result['category']}"
-                badge_class = f"status-badge badge-{result['category']}"
-                badge_icon = "✅" if result['category'] == 'good' else "⚠️" if result[
-                                                                                  'category'] == 'suspicious' else "❌"
-
-                # Calculate marker position for safety scale
-                marker_pos = result['confidence'] * 100
-                marker_color = "#48bb78" if result['confidence'] > 0.3 else "#ecc94b" if result[
-                                                                                             'confidence'] > 0.14 else "#f56565"
+                # Determine card styling based on result label
+                if result['label'] == "PASS":
+                    card_class = "result-card good"
+                    badge_class = "status-badge badge-good"
+                    badge_icon = "✅"
+                elif result['label'] == "REJECT":
+                    card_class = "result-card defective"
+                    badge_class = "status-badge badge-defective"
+                    badge_icon = "❌"
+                elif result['label'] == "BLURRY":
+                    card_class = "result-card blurry"
+                    badge_class = "status-badge badge-blurry"
+                    badge_icon = "📷"
+                elif result['label'] == "LOW QUALITY":
+                    card_class = "result-card low_quality"
+                    badge_class = "status-badge badge-low_quality"
+                    badge_icon = "⚠️"
+                else:
+                    card_class = "result-card suspicious"
+                    badge_class = "status-badge badge-suspicious"
+                    badge_icon = "⚠️"
 
                 st.markdown(f"""
                 <div class="{card_class}">
                     <div class="{badge_class}">{badge_icon} {result['label']}</div>
-
                 """, unsafe_allow_html=True)
 
-                # Show review section only for suspicious cases
-                if result['category'] == 'suspicious':
-                    st.markdown(f"""
-                    <div class="review-section">
-                        <strong>⚠️ Manual Inspection Required</strong><br>
-                        {result['recommendation']}<br>
-                        Please visually inspect the highlighted areas.
-                    </div>
-                    """, unsafe_allow_html=True)
+                # Show appropriate message based on result
+                if result['label'] == "BLURRY":
+                    st.error(
+                        "📷 **Blurry Image Detected**\n\nPlease upload a clear, focused image for accurate inspection.")
+                elif result['label'] == "LOW QUALITY":
+                    st.warning(
+                        f"⚠️ **Low Resolution Image**\n\nPlease upload a higher quality image (minimum 640p) for accurate inspection.")
+                elif result['label'] == "PASS":
+                    st.success("✅ **Tyre Passed Inspection**\n\nNo defects detected. Tyre is safe for use.")
+                elif result['label'] == "REJECT":
+                    st.error("❌ **Tyre Rejected**\n\nDefect detected. Do not use this tyre.")
                 else:
                     st.info(result['recommendation'])
+
+                # Show confidence score only for PASS/REJECT
+                if result['label'] in ["PASS", "REJECT"]:
+                    st.markdown(f"""
+                    <div style="margin-top: 1rem;">
+                        <div style="font-size: 2rem; font-weight: bold;">{result['confidence'] * 100:.1f}%</div>
+                        <div style="color: #718096;">Confidence Score</div>
+                    </div>
+                    """, unsafe_allow_html=True)
 
                 # Action buttons
                 col_a, col_b = st.columns(2)
                 with col_a:
                     if st.button("📄 Generate Report", use_container_width=True):
                         report = f"""
-TYRE INSPECTION REPORT
-======================
-Date: {datetime.now().strftime("%Y-%m-%d %H:%M")}
-Result: {result['label']}
-Safety Score: {result['confidence'] * 100:.1f}%
-Status: {result['recommendation']}
-Defect Areas: {result.get('box_count', 0)}
-- Large: {result.get('large', 0)}
-- Medium: {result.get('medium', 0)}  
-- Small: {result.get('small', 0)}
+            TYRE INSPECTION REPORT
+            ======================
+            Date: {datetime.now().strftime("%Y-%m-%d %H:%M")}
+            Result: {result['label']}
+            Confidence: {result['confidence'] * 100:.1f}% (if applicable)
+            Status: {result['recommendation']}
+            Defect Areas: {result.get('box_count', 0)}
+            - Large: {result.get('large', 0)}
+            - Medium: {result.get('medium', 0)}  
+            - Small: {result.get('small', 0)}
                         """
                         st.download_button("📥 Download Report", report,
                                            f"tyre_report_{datetime.now().strftime('%Y%m%d_%H%M')}.txt")
@@ -782,24 +804,51 @@ elif mode == "Camera":
                     else:
                         st.image(image_rgb, use_container_width=True)
 
-                # Result display
-                color = "#48bb78" if category == 'good' else "#ecc94b" if category == 'suspicious' else "#f56565"
-                icon = "✅" if category == 'good' else "⚠️" if category == 'suspicious' else "❌"
+
+                # Result display - Updated for all result types
+                if label == "PASS":
+                    color = "#48bb78"
+                    icon = "✅"
+                    show_confidence = True
+                elif label == "REJECT":
+                    color = "#f56565"
+                    icon = "❌"
+                    show_confidence = True
+                elif label == "BLURRY":
+                    color = "#a0aec0"
+                    icon = "📷"
+                    show_confidence = False
+                elif label == "LOW QUALITY":
+                    color = "#f59e0b"
+                    icon = "⚠️"
+                    show_confidence = False
+                else:
+                    color = "#ecc94b"
+                    icon = "⚠️"
+                    show_confidence = True
 
                 st.markdown(f"""
                 <div style="background: white; padding: 1.5rem; border-radius: 10px; border-left: 5px solid {color}; margin-top: 1rem;">
                     <h3 style="margin-top: 0;">{icon} {label}</h3>
-                    <div style="font-size: 2.5rem; margin: 0.5rem 0;">{confidence * 100:.1f}%</div>
-                    <p style="color: #718096;">Safety Score</p>
                 """, unsafe_allow_html=True)
 
-                if category == 'suspicious':
+                if show_confidence:
                     st.markdown(f"""
-                    <div class="review-section" style="margin: 1rem 0;">
-                        <strong>⚠️ Manual Inspection Required</strong><br>
-                        {recommendation}
-                    </div>
+                    <div style="font-size: 2.5rem; margin: 0.5rem 0;">{confidence * 100:.1f}%</div>
+                    <p style="color: #718096;">Confidence Score</p>
                     """, unsafe_allow_html=True)
+
+                # Show appropriate message based on result
+                if label == "BLURRY":
+                    st.error(
+                        "📷 **Blurry Image Detected**\n\nPlease capture a clear, focused image for accurate inspection.")
+                elif label == "LOW QUALITY":
+                    st.warning(
+                        f"⚠️ **Low Resolution Image**\n\nPlease capture a higher quality image (minimum 640p) for accurate inspection.")
+                elif label == "PASS":
+                    st.success("✅ **Tyre Passed Inspection**\n\nNo defects detected. Tyre is safe for use.")
+                elif label == "REJECT":
+                    st.error("❌ **Tyre Rejected**\n\nDefect detected. Do not use this tyre.")
                 else:
                     st.info(recommendation)
 
@@ -872,9 +921,9 @@ elif mode == "Batch":
             st.metric("✅ Pass",passed)
         with col3:
             rejected = sum(1 for r in results if r["Result"] == "REJECT")
-            st.metric("⚠️ Review", rejected)
+            st.metric("❌Reject ", rejected)
         with col4:
-            low_quality = sum(1 for r in results if r["Result"] == "Low Quality")
+            low_quality = sum(1 for r in results if r["Result"] == "Low QUALITY")
             blurry = sum(1 for r in results if r["Result"]== "BLURRY")
             total_issues = low_quality + blurry
             st.metric("❌ Quality Issues", total_issues)
