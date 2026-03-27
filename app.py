@@ -259,7 +259,7 @@ with st.sidebar:
             pass_rate = (st.session_state.good_count / max(st.session_state.total_scans, 1)) * 100
             st.metric("Pass Rate", f"{pass_rate:.0f}%")
         with col3:
-            st.metric("Review", st.session_state.suspicious_count)
+            st.metric("Quality Issues", st.session_state.suspicious_count)
 
         if st.session_state.history:
             st.markdown("### Recent")
@@ -839,18 +839,19 @@ elif mode == "Batch":
 
                 results.append({
                     "File": file.name[:20] + "..." if len(file.name) > 20 else file.name,
-                    "Status": "✅" if category == 'good' else "⚠️" if category == 'suspicious' else "❌",
+                    "Status": "✅" if label == "PASS" else "⚠️" if label in ["BLURRY", "LOW QUALITY"] else "❌",
                     "Score": f"{confidence * 100:.1f}%",
                     "Result": label,
                     "Defects": f"{box_count} (L:{large} M:{medium} S:{small})" if box_count > 0 else "None",
-                    "Action": "Pass" if category == 'good' else "Review" if category == 'suspicious' else "Reject"
+                    "Action": "Pass" if label == "PASS" else "Review" if label in ["BLURRY",
+                                                                                   "LOW QUALITY"] else "Reject"
                 })
 
                 # Update stats
                 st.session_state.total_scans += 1
-                if category == 'good':
+                if label == "PASS":
                     st.session_state.good_count += 1
-                elif category == 'suspicious':
+                elif label in ["BLURRY", "LOW QUALITY"]:
                     st.session_state.suspicious_count += 1
                 else:
                     st.session_state.defective_count += 1
@@ -867,14 +868,16 @@ elif mode == "Batch":
         with col1:
             st.metric("Total", len(results))
         with col2:
-            good = sum(1 for r in results if r["Result"] == "Good")
-            st.metric("✅ Pass", good)
+            passed = sum(1 for r in results if r["Result"] == "PASS")
+            st.metric("✅ Pass",passed)
         with col3:
-            suspicious = sum(1 for r in results if r["Result"] == "Review Needed")
-            st.metric("⚠️ Review", suspicious)
+            rejected = sum(1 for r in results if r["Result"] == "REJECT")
+            st.metric("⚠️ Review", rejected)
         with col4:
-            defective = sum(1 for r in results if r["Result"] == "Defective")
-            st.metric("❌ Fail", defective)
+            low_quality = sum(1 for r in results if r["Result"] == "Low Quality")
+            blurry = sum(1 for r in results if r["Result"]== "BLURRY")
+            total_issues = low_quality + blurry
+            st.metric("❌ Quality Issues", total_issues)
 
         # Download button
         if st.button("📥 Download Report"):
