@@ -506,31 +506,31 @@ def get_tread_percentage_only(image):
         # New tyre: groove_ratio 0.10–0.25
         # Worn: 0.05–0.10
         # Bald: <0.01
-        if groove_ratio < 0.03:
-            tread_percent = 85 + (0.03 - groove_ratio) * 1000
-            tread_status = "EXCELLENT"
-            tread_color = (0, 200, 0)
-            tread_mm = "6-8 mm"
-        elif groove_ratio < 0.06:
-            tread_percent = 65 + (0.06 - groove_ratio) * 667
-            tread_status = "GOOD"
-            tread_color = (0, 165, 0)
-            tread_mm = "4-6 mm"
-        elif groove_ratio < 0.12:
-            tread_percent = 35 + (0.12 - groove_ratio) * 500
+        if groove_ratio < 0.01:
+            tread_percent = 0
+            tread_status = "BALD"
+            tread_color = (0, 0, 255)  # red
+            tread_mm = "0-1 mm"
+        elif groove_ratio < 0.05:
+            tread_percent = 25
+            tread_status = "WORN"
+            tread_color = (0, 100, 255)  # orange
+            tread_mm = "1.6-2 mm"
+        elif groove_ratio < 0.10:
+            tread_percent = 50
             tread_status = "MODERATE"
-            tread_color = (0, 165, 255)
+            tread_color = (0, 165, 255)  # yellow
             tread_mm = "2-4 mm"
         elif groove_ratio < 0.20:
-            tread_percent = 10 + (0.20 - groove_ratio) * 250
-            tread_status = "WORN"
-            tread_color = (0, 100, 255)
-            tread_mm = "1.6-2 mm"
+            tread_percent = 90
+            tread_status = "Excellent"
+            tread_color = (0, 165, 0)  # greenish
+            tread_mm = "4-6 mm"
         else:
-            tread_percent = max(0, 10 * (1 - (groove_ratio - 0.20) / 0.10))
-            tread_status = "CRITICAL"
-            tread_color = (0, 0, 255)
-            tread_mm = "0-1.6 mm"
+            tread_percent = 100
+            tread_status = "EXCELLENT"
+            tread_color = (0, 200, 0)  # bright green
+            tread_mm = "6-8 mm"
 
         tread_percent = min(100, max(0, tread_percent))
 
