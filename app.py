@@ -452,6 +452,112 @@ def draw_defect_boxes(image, confidence):
         return image, 0, 0, 0, 0
 
 
+def get_tread_percentage_only(image):
+    """
+    Tread analysis using adaptive threshold + contour area filtering.
+    """
+    vis_image = image.copy()
+    h, w = image.shape[:2]
+
+    # ROI: central 40% height, central 60% width
+    roi_top = int(h * 0.3)
+    roi_bottom = int(h * 0.7)
+    roi_left = int(w * 0.2)
+    roi_right = int(w * 0.8)
+
+    gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+    roi_gray = gray[roi_top:roi_bottom, roi_left:roi_right]
+
+
+    # --- Adaptive threshold (more robust than Otsu for uneven lighting) ---
+    blurred = cv2.GaussianBlur(roi_gray, (5, 5), 0)
+    binary = cv2.adaptiveThreshold(blurred, 255,
+                                   cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                   cv2.THRESH_BINARY_INV, 11, 2)
+
+    # --- Remove small noise (morphological opening) ---
+    kernel = np.ones((3, 3), np.uint8)
+    binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel, iterations=1)
+
+    # --- Find contours ---
+    contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    # --- Filter contours: keep only those with area > 50 (ignore tiny specks) ---
+    valid_contours = [cnt for cnt in contours if cv2.contourArea(cnt) > 50]
+
+    # Compute groove ratio from valid contours
+    mask = np.zeros_like(binary)
+    cv2.drawContours(mask, valid_contours, -1, 255, -1)
+    groove_pixels = np.sum(mask > 0)
+    roi_pixels = roi_gray.size
+    groove_ratio = groove_pixels / roi_pixels if roi_pixels > 0 else 0
+
+    print(f"Groove ratio (filtered): {groove_ratio:.4f}, valid contours: {len(valid_contours)}")
+
+    # --- Decision: if very few or no valid contours -> bald ---
+    if len(valid_contours) < 5 and groove_ratio < 0.01:
+        tread_percent = 0
+        tread_status = "BALD"
+        tread_color = (0, 0, 255)
+        tread_mm = "0-1 mm"
+    else:
+        # Map groove_ratio to tread percentage (calibrated for filtered contours)
+        # Typical values after filtering:
+        # New tyre: groove_ratio 0.10–0.25
+        # Worn: 0.05–0.10
+        # Bald: <0.01
+        if groove_ratio < 0.03:
+            tread_percent = 85 + (0.03 - groove_ratio) * 1000
+            tread_status = "EXCELLENT"
+            tread_color = (0, 200, 0)
+            tread_mm = "6-8 mm"
+        elif groove_ratio < 0.06:
+            tread_percent = 65 + (0.06 - groove_ratio) * 667
+            tread_status = "GOOD"
+            tread_color = (0, 165, 0)
+            tread_mm = "4-6 mm"
+        elif groove_ratio < 0.12:
+            tread_percent = 35 + (0.12 - groove_ratio) * 500
+            tread_status = "MODERATE"
+            tread_color = (0, 165, 255)
+            tread_mm = "2-4 mm"
+        elif groove_ratio < 0.20:
+            tread_percent = 10 + (0.20 - groove_ratio) * 250
+            tread_status = "WORN"
+            tread_color = (0, 100, 255)
+            tread_mm = "1.6-2 mm"
+        else:
+            tread_percent = max(0, 10 * (1 - (groove_ratio - 0.20) / 0.10))
+            tread_status = "CRITICAL"
+            tread_color = (0, 0, 255)
+            tread_mm = "0-1.6 mm"
+
+        tread_percent = min(100, max(0, tread_percent))
+
+    # --- Visualization (same as before) ---
+    gauge_x, gauge_y = 20, h - 60
+    cv2.rectangle(vis_image, (gauge_x, gauge_y), (gauge_x + 200, gauge_y + 20), (50, 50, 50), -1)
+    cv2.rectangle(vis_image, (gauge_x, gauge_y),
+                  (gauge_x + int(200 * tread_percent / 100), gauge_y + 20),
+                  tread_color, -1)
+    cv2.putText(vis_image, f"TREAD: {tread_percent:.0f}%", (gauge_x, gauge_y - 5),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+    cv2.putText(vis_image, tread_status, (gauge_x, gauge_y - 20),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.4, tread_color, 1)
+
+    cv2.rectangle(vis_image, (w - 180, 10), (w - 10, 70), (0, 0, 0), -1)
+    cv2.putText(vis_image, "TREAD ANALYSIS", (w - 175, 30),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1)
+    cv2.putText(vis_image, f"{tread_percent:.0f}%", (w - 175, 55),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, tread_color, 2)
+
+    return {
+        'tread_percent': tread_percent,
+        'tread_status': tread_status,
+        'tread_estimate_mm': tread_mm,
+        'groove_ratio': groove_ratio,
+        'visualization': vis_image
+    }
 def has_prominent_logo(image):
     """Check if image has prominent text/logo"""
     gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
@@ -476,9 +582,11 @@ def predict_image(model, image):
 
     # Step 2: Check blur using edge density
     is_blurry, edge_density = is_image_blurry(image, threshold=0.02)
+    blurry_warning = None
 
     if is_blurry:
-        return "BLURRY", 0, "blurry", "📷 BLURRY IMAGE - Please upload a clear image", None
+        blurry_warning ="⚠️ Image is blurry - Prediction May be less accurate."
+
 
     # Step 3: Check for logo presence
     has_logo = has_prominent_logo(image)
@@ -514,6 +622,9 @@ def predict_image(model, image):
             category = "defective"
             message = "❌ Tyre rejected - Defect detected"
 
+        # Append blurry warning to message if applicable
+        if blurry_warning:
+            message = f"{blurry_warning}\n{message}"
         # Add metrics for tracking
         if metrics:
             metrics['has_logo'] = has_logo
@@ -521,7 +632,8 @@ def predict_image(model, image):
             metrics['resolution'] = f"{width}x{height}"
             metrics['is_hd'] = is_hd
             metrics['original_confidence'] = original_confidence
-
+            metrics['is_blurry'] = is_blurry
+            metrics['edge_density'] = edge_density
         return label, confidence, category, message, metrics
 
     except Exception as e:
@@ -565,58 +677,91 @@ if mode == "Upload":
         # Process image
         if st.session_state.get('processing', False):
             with st.spinner("🔍 Analyzing tyre surface..."):
-                # Get prediction
-                label, confidence, category, recommendation, metrics = predict_image(model, image)
+                # STEP 1: OpenCV - Get tread percentage only
+                tread_results = get_tread_percentage_only(image)
 
-                if label:
-                    if label:
-                        # Draw boxes ONLY for defective or suspicious images, not for good ones
-                        boxed_image = None
-                        box_count = large = medium = small = 0
+                # STEP 2: Model - Make final decision (PASS/REJECT)
+                model_label, model_confidence, model_category, model_message, model_metrics = predict_image(model,
+                                                                                                            image)
 
-                        if show_boxes and category in ['defective','suspicious']:  # Only draw boxes for non-good images
-                            boxed_image, box_count, large, medium, small = draw_defect_boxes(image, confidence)
+                # STEP 3: Draw defect boxes based on model confidence
+                # Only draw boxes if show_boxes is enabled AND model says REJECT (or low confidence)
+                boxed_image = None
+                box_count = large = medium = small = 0
 
-                    # Store results
-                    st.session_state.result = {
-                        'label': label,
-                        'confidence': confidence,
-                        'category': category,
-                        'recommendation': recommendation,
-                        'boxed_image': boxed_image,
-                        'box_count': box_count,
-                        'large': large,
-                        'medium': medium,
-                        'small': small,
-                        'original_image': image
-                    }
+                if show_boxes and model_label == "REJECT":
+                    # Draw boxes using your existing function
+                    boxed_image, box_count, large, medium, small = draw_defect_boxes(image, model_confidence)
 
-                    # Update stats
-                    st.session_state.total_scans += 1
-                    if category == 'good':
-                        st.session_state.good_count += 1
-                    elif category == 'suspicious':
-                        st.session_state.suspicious_count += 1
-                    else:
-                        st.session_state.defective_count += 1
+                # STEP 4: Combine results
+                if model_label == "PASS":
+                    label = "PASS"
+                    category = "good"
+                    final_message = f"✅ {model_message}"
+                elif model_label == "REJECT":
+                    label = "REJECT"
+                    category = "defective"
+                    final_message = f"❌ {model_message}"
+                else:
+                    label = model_label  # BLURRY or LOW QUALITY
+                    category = "suspicious"
+                    final_message = model_message
 
-                    # Add to history
-                    st.session_state.history.append({
-                        'time': datetime.now().strftime("%H:%M"),
-                        'score': confidence,
-                        'category': category
-                    })
+                # Use model's confidence
+                confidence = model_confidence
+
+                # Decide which image to show for the right panel
+                # If we have boxed_image (defects), show that. Otherwise show tread visualization
+                if show_boxes and boxed_image is not None:
+                    display_image = boxed_image
+                else:
+                    display_image = tread_results['visualization']
+
+                # Store results
+                st.session_state.result = {
+                    'label': label,
+                    'confidence': confidence,
+                    'category': category,
+                    'recommendation': final_message,
+                    'original_image': image,
+                    'boxed_image': display_image,
+                    'tread_percent': tread_results['tread_percent'],
+                    'tread_status': tread_results['tread_status'],
+                    'tread_estimate_mm': tread_results['tread_estimate_mm'],
+                    # Store defect counts for display
+                    'box_count': box_count,
+                    'large': large,
+                    'medium': medium,
+                    'small': small
+                }
+
+                # Update stats
+                st.session_state.total_scans += 1
+                if category == 'good':
+                    st.session_state.good_count += 1
+                elif category == 'suspicious':
+                    st.session_state.suspicious_count += 1
+                else:
+                    st.session_state.defective_count += 1
+
+                # Add to history
+                st.session_state.history.append({
+                    'time': datetime.now().strftime("%H:%M"),
+                    'score': confidence,
+                    'category': category
+                })
 
                 st.session_state.processing = False
                 st.rerun()
 
         # Display results
+        # Display results
         else:
             result = st.session_state.result
 
             # Show comparison view if enabled
-            if compare_view and show_boxes and result['boxed_image'] is not None:
-                st.markdown("#### 🔍 Comparison View")
+            if compare_view:
+                st.markdown("#### 🔍 Inspection Report")
                 col1, col2 = st.columns(2)
 
                 with col1:
@@ -624,41 +769,15 @@ if mode == "Upload":
                     st.image(result['original_image'], use_container_width=True)
 
                 with col2:
-                    st.markdown('<div class="image-label">🔍 Detected Defects</div>', unsafe_allow_html=True)
+                    st.markdown('<div class="image-label">🔬 Analysis Result</div>', unsafe_allow_html=True)
                     st.image(result['boxed_image'], use_container_width=True)
-
-                    # Show box statistics
-                    if result['box_count'] > 0:
-                        st.markdown(f"""
-                        <div class="box-legend">
-                            <div class="legend-item"><span class="color-box red"></span> Large: {result['large']}</div>
-                            <div class="legend-item"><span class="color-box orange"></span> Medium: {result['medium']}</div>
-                            <div class="legend-item"><span class="color-box yellow"></span> Small: {result['small']}</div>
-                            <div class="legend-item">📍 Total: {result['box_count']}</div>
-                        </div>
-                        """, unsafe_allow_html=True)
             else:
-                # Single image view
-                st.markdown("#### 🔍 Inspection View")
-                if show_boxes and result['boxed_image'] is not None:
-                    st.image(result['boxed_image'], use_container_width=True)
+                st.image(result['boxed_image'], use_container_width=True)
 
-                    if result['box_count'] > 0:
-                        st.markdown(f"""
-                        <div class="box-legend">
-                            <div class="legend-item"><span class="color-box red"></span> Large: {result['large']}</div>
-                            <div class="legend-item"><span class="color-box orange"></span> Medium: {result['medium']}</div>
-                            <div class="legend-item"><span class="color-box yellow"></span> Small: {result['small']}</div>
-                            <div class="legend-item">📍 Total: {result['box_count']}</div>
-                        </div>
-                        """, unsafe_allow_html=True)
-                else:
-                    st.image(result['original_image'], use_container_width=True)
-
-            # Result Card (separate from images)
+            # Result Card
             col1, col2, col3 = st.columns([1, 2, 1])
             with col2:
-                # Determine card styling based on result label
+                # Determine card styling
                 if result['label'] == "PASS":
                     card_class = "result-card good"
                     badge_class = "status-badge badge-good"
@@ -667,14 +786,6 @@ if mode == "Upload":
                     card_class = "result-card defective"
                     badge_class = "status-badge badge-defective"
                     badge_icon = "❌"
-                elif result['label'] == "BLURRY":
-                    card_class = "result-card blurry"
-                    badge_class = "status-badge badge-blurry"
-                    badge_icon = "📷"
-                elif result['label'] == "LOW QUALITY":
-                    card_class = "result-card low_quality"
-                    badge_class = "status-badge badge-low_quality"
-                    badge_icon = "⚠️"
                 else:
                     card_class = "result-card suspicious"
                     badge_class = "status-badge badge-suspicious"
@@ -685,51 +796,93 @@ if mode == "Upload":
                     <div class="{badge_class}">{badge_icon} {result['label']}</div>
                 """, unsafe_allow_html=True)
 
-                # Show appropriate message based on result
-                if result['label'] == "BLURRY":
-                    st.error(
-                        "📷 **Blurry Image Detected**\n\nPlease upload a clear, focused image for accurate inspection.")
-                elif result['label'] == "LOW QUALITY":
-                    st.warning(
-                        f"⚠️ **Low Resolution Image**\n\nPlease upload a higher quality image (minimum 640p) for accurate inspection.")
-                elif result['label'] == "PASS":
-                    st.success("✅ **Tyre Passed Inspection**\n\nNo defects detected. Tyre is safe for use.")
-                elif result['label'] == "REJECT":
-                    st.error("❌ **Tyre Rejected**\n\nDefect detected. Do not use this tyre.")
-                else:
-                    st.info(result['recommendation'])
+                # Model confidence
+                st.markdown(f"### Confidence: {result['confidence'] * 100:.1f}%")
 
-                # Show confidence score only for PASS/REJECT
-                if result['label'] in ["PASS", "REJECT"]:
-                    st.markdown(f"""
-                    <div style="margin-top: 1rem;">
-                        <div style="font-size: 2rem; font-weight: bold;">{result['confidence'] * 100:.1f}%</div>
-                        <div style="color: #718096;">Confidence Score</div>
+                # Show defect legend if defects were found
+                if result.get('box_count', 0) > 0:
+                    st.markdown("---")
+                    st.markdown("### 🔍 Defects Detected")
+                    col_d1, col_d2, col_d3 = st.columns(3)
+                    with col_d1:
+                        st.markdown(f"🔴 **Large:** {result.get('large', 0)}")
+                    with col_d2:
+                        st.markdown(f"🟠 **Medium:** {result.get('medium', 0)}")
+                    with col_d3:
+                        st.markdown(f"🟡 **Small:** {result.get('small', 0)}")
+                    st.caption(f"Total defects: {result.get('box_count', 0)}")
+
+                st.markdown("---")
+
+                # Tread Information (from OpenCV)
+                st.markdown("### 📊 Tread Depth Information")
+                col_t1, col_t2, col_t3 = st.columns(3)
+                with col_t1:
+                    st.metric("Tread Remaining", f"{result['tread_percent']:.0f}%")
+                with col_t2:
+                    st.metric("Status", result['tread_status'])
+                with col_t3:
+                    st.metric("Est. Depth", result['tread_estimate_mm'])
+
+                # Visual gauge
+                gauge_html = f"""
+                <div style="background: #e2e8f0; border-radius: 10px; height: 20px; width: 100%; margin: 10px 0;">
+                    <div style="background: linear-gradient(90deg, #f56565, #ecc94b, #48bb78); 
+                                border-radius: 10px; width: {result['tread_percent']}%; height: 20px;">
                     </div>
-                    """, unsafe_allow_html=True)
+                </div>
+                """
+                st.markdown(gauge_html, unsafe_allow_html=True)
+
+                st.markdown("---")
+                st.markdown("### 📋 Recommendation")
+
+                # Show model's message
+                if result['label'] == "PASS":
+                    st.success(result['recommendation'])
+                elif result['label'] == "REJECT":
+                    st.error(result['recommendation'])
+                else:
+                    st.warning(result['recommendation'])
 
                 # Action buttons
                 col_a, col_b = st.columns(2)
                 with col_a:
                     if st.button("📄 Generate Report", use_container_width=True):
                         report = f"""
-            TYRE INSPECTION REPORT
-            ======================
-            Date: {datetime.now().strftime("%Y-%m-%d %H:%M")}
-            Result: {result['label']}
-            Confidence: {result['confidence'] * 100:.1f}% (if applicable)
-            Status: {result['recommendation']}
-            Defect Areas: {result.get('box_count', 0)}
-            - Large: {result.get('large', 0)}
-            - Medium: {result.get('medium', 0)}  
-            - Small: {result.get('small', 0)}
-                        """
+        TYRE INSPECTION REPORT
+        ======================
+        Date: {datetime.now().strftime("%Y-%m-%d %H:%M")}
+        Verdict: {result['label']}
+        Confidence: {result['confidence'] * 100:.1f}%
+
+        DEFECTS DETECTED
+        ----------------
+        Total Defects: {result.get('box_count', 0)}
+        - Large: {result.get('large', 0)}
+        - Medium: {result.get('medium', 0)}
+        - Small: {result.get('small', 0)}
+
+        TREAD INFORMATION (OpenCV Analysis)
+        -----------------------------------
+        Tread Remaining: {result['tread_percent']:.0f}%
+        Status: {result['tread_status']}
+        Estimated Depth: {result['tread_estimate_mm']}
+
+        RECOMMENDATION
+        --------------
+        {result['recommendation']}
+
+        DISCLAIMER
+        ----------
+        This is an AI-assisted inspection. For critical safety decisions,
+        please consult a certified tyre professional.
+        """
                         st.download_button("📥 Download Report", report,
                                            f"tyre_report_{datetime.now().strftime('%Y%m%d_%H%M')}.txt")
 
                 with col_b:
                     if st.button("🔄 New Scan", use_container_width=True):
-                        # Clear session state
                         keys_to_clear = ['uploaded_image', 'result', 'processing']
                         for key in keys_to_clear:
                             if key in st.session_state:
@@ -737,7 +890,6 @@ if mode == "Upload":
                         st.rerun()
 
                 st.markdown("</div>", unsafe_allow_html=True)
-
 elif mode == "Camera":
     st.markdown("### 🎥 Live Inspection")
 
@@ -765,94 +917,74 @@ elif mode == "Camera":
         image_rgb = cv2.cvtColor(cv2_img, cv2.COLOR_BGR2RGB)
 
         with st.spinner("🔍 Analyzing..."):
-            label, confidence, category, recommendation, metrics = predict_image(model, image_rgb)
+            # Get tread percentage
+            tread_results = get_tread_percentage_only(image_rgb)
 
-            if label:
-                # Update stats
-                st.session_state.total_scans += 1
-                if category == 'good':
-                    st.session_state.good_count += 1
-                elif category == 'suspicious':
-                    st.session_state.suspicious_count += 1
-                else:
-                    st.session_state.defective_count += 1
+            # Get model prediction
+            model_label, model_confidence, model_category, model_message, model_metrics = predict_image(model,
+                                                                                                        image_rgb)
 
-                st.session_state.history.append({
-                    'time': datetime.now().strftime("%H:%M"),
-                    'score': confidence,
-                    'category': category
-                })
+            # Draw defect boxes if needed
+            boxed_image = None
+            box_count = large = medium = small = 0
 
-                # Draw boxes if enabled
-                boxed_image = None
-                box_count = large = medium = small = 0
-                if show_boxes and category in ['defective', 'suspicious']:  # Only draw boxes for non-good images
-                    boxed_image, box_count, large, medium, small = draw_defect_boxes(image_rgb, confidence)
+            if show_boxes and model_label == "REJECT":
+                boxed_image, box_count, large, medium, small = draw_defect_boxes(image_rgb, model_confidence)
 
-                # Show comparison or single view
-                if compare_view and show_boxes and boxed_image is not None:
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.markdown('<div class="image-label">📸 Original</div>', unsafe_allow_html=True)
-                        st.image(image_rgb, use_container_width=True)
-                    with col2:
-                        st.markdown('<div class="image-label">🔍 Detected</div>', unsafe_allow_html=True)
-                        st.image(boxed_image, use_container_width=True)
-                else:
-                    if show_boxes and boxed_image is not None:
-                        st.image(boxed_image, use_container_width=True)
-                    else:
-                        st.image(image_rgb, use_container_width=True)
+            # Determine display image
+            if show_boxes and boxed_image is not None:
+                display_image = boxed_image
+            else:
+                display_image = tread_results['visualization']
 
+            # Update stats
+            st.session_state.total_scans += 1
+            if model_label == "PASS":
+                st.session_state.good_count += 1
+                category = "good"
+            elif model_label == "REJECT":
+                st.session_state.defective_count += 1
+                category = "defective"
+            else:
+                st.session_state.suspicious_count += 1
+                category = "suspicious"
 
-                # Result display - Updated for all result types
-                if label == "PASS":
-                    color = "#48bb78"
-                    icon = "✅"
-                    show_confidence = True
-                elif label == "REJECT":
-                    color = "#f56565"
-                    icon = "❌"
-                    show_confidence = True
-                elif label == "BLURRY":
-                    color = "#a0aec0"
-                    icon = "📷"
-                    show_confidence = False
-                elif label == "LOW QUALITY":
-                    color = "#f59e0b"
-                    icon = "⚠️"
-                    show_confidence = False
-                else:
-                    color = "#ecc94b"
-                    icon = "⚠️"
-                    show_confidence = True
+            st.session_state.history.append({
+                'time': datetime.now().strftime("%H:%M"),
+                'score': model_confidence,
+                'category': category
+            })
 
-                st.markdown(f"""
-                <div style="background: white; padding: 1.5rem; border-radius: 10px; border-left: 5px solid {color}; margin-top: 1rem;">
-                    <h3 style="margin-top: 0;">{icon} {label}</h3>
-                """, unsafe_allow_html=True)
+            # Show visualization
+            st.image(display_image, use_container_width=True)
 
-                if show_confidence:
-                    st.markdown(f"""
-                    <div style="font-size: 2.5rem; margin: 0.5rem 0;">{confidence * 100:.1f}%</div>
-                    <p style="color: #718096;">Confidence Score</p>
-                    """, unsafe_allow_html=True)
+            # Show results
+            if model_label == "PASS":
+                st.success(f"✅ {model_label}")
+            elif model_label == "REJECT":
+                st.error(f"❌ {model_label}")
+            else:
+                st.warning(f"⚠️ {model_label}")
 
-                # Show appropriate message based on result
-                if label == "BLURRY":
-                    st.error(
-                        "📷 **Blurry Image Detected**\n\nPlease capture a clear, focused image for accurate inspection.")
-                elif label == "LOW QUALITY":
-                    st.warning(
-                        f"⚠️ **Low Resolution Image**\n\nPlease capture a higher quality image (minimum 640p) for accurate inspection.")
-                elif label == "PASS":
-                    st.success("✅ **Tyre Passed Inspection**\n\nNo defects detected. Tyre is safe for use.")
-                elif label == "REJECT":
-                    st.error("❌ **Tyre Rejected**\n\nDefect detected. Do not use this tyre.")
-                else:
-                    st.info(recommendation)
+            # Show defect summary if any
+            if box_count > 0:
+                st.markdown(f"**Defects detected:** {box_count} (L:{large} M:{medium} S:{small})")
 
-                st.markdown("</div>", unsafe_allow_html=True)
+            # Show details
+            col_a, col_b, col_c = st.columns(3)
+            with col_a:
+                st.metric("Tread", f"{tread_results['tread_percent']:.0f}%")
+            with col_b:
+                st.metric("Confidence", f"{model_confidence * 100:.1f}%")
+            with col_c:
+                st.metric("Status", tread_results['tread_status'])
+
+            if model_label == "REJECT":
+                st.error(model_message)
+            elif model_label == "PASS":
+                st.success(model_message)
+            else:
+                st.warning(model_message)
 
 elif mode == "Batch":
     st.markdown("### 📁 Batch Processing")
